@@ -1,25 +1,6 @@
-# Flask for web framework
-flask
-
-# Requests for making HTTP requests
-requests
-
-# Python Telegram Bot library
-python-telegram-bot
-
-# Redis for caching
-redis
-
-# Google API Client for accessing Google services
-google-api-python-client
-google-auth-httplib2
-google-auth-oauthlib
-
-# Psutil for system utilization details
-psutil
-
-# Telebot (pyTelegramBotAPI) for Telegram bot
-pyTelegramBotAPI
-
-# Gunicorn for deploying Flask app in production
-gunicorn
+Flask==2.0.1
+pyTelegramBotAPI==4.0.3
+google-api-python-client==2.19.1
+google-auth-httplib2==0.1.0
+google-auth-oauthlib==0.4.6
+redis==4.2.0
