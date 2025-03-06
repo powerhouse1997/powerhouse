@@ -1,5 +1,5 @@
 import os
-from flask import Flask, request
+from flask import Flask, request, jsonify
 import telebot
 import googleapiclient.discovery
 import googleapiclient.http
@@ -9,10 +9,8 @@ import google.oauth2.credentials
 
 ###############################################################################
 # Configuration
-# Directly using your provided API token. For security, consider using an environment variable instead.
+# Using your provided token directly for demonstration.
 TELEGRAM_TOKEN = '6438781804:AAGvcF5pp2gg2Svr5f0kpxvG9ZMoiG1WACc'
-
-# If BASE_URL is not set in the environment, default to your Azure URL.
 BASE_URL = os.environ.get('BASE_URL', 'https://mirrorbot-d5ewf6egd3a5baby.canadacentral-01.azurewebsites.net/')
 if not BASE_URL.endswith('/'):
     BASE_URL += '/'
@@ -25,14 +23,9 @@ app = Flask(__name__)
 ###############################################################################
 # Google Drive Credentials & Authentication Setup
 SCOPES = ['https://www.googleapis.com/auth/drive.file']
-# Use a relative path so that it works in Azure.
 CREDS_FILE = os.path.join(os.path.dirname(__file__), 'jarvis-400615-5d22aa4feea3.json')
 
 def authorize_google_drive():
-    """
-    Authorizes with Google Drive using InstalledAppFlow.
-    In production, consider using a service account to avoid the interactive flow.
-    """
     creds = None
     if os.path.exists('token.json'):
         creds = google.oauth2.credentials.Credentials.from_authorized_user_file('token.json', SCOPES)
@@ -58,14 +51,10 @@ def send_welcome(message):
 def handle_text(message):
     link = message.text
     bot.reply_to(message, "Mirroring your download link...")
-    # TODO: Add code to download the file from the link and then upload it to Google Drive.
-    # For example:
-    # file_path = download_file(link)
-    # upload_to_drive(file_path)
+    # TODO: Add code to download and then upload
 
 @bot.message_handler(content_types=['document'])
 def handle_document(message):
-    # Ensure the 'downloads' directory exists.
     if not os.path.exists('downloads'):
         os.makedirs('downloads')
     file_info = bot.get_file(message.document.file_id)
@@ -77,9 +66,6 @@ def handle_document(message):
     upload_to_drive(file_path)
 
 def upload_to_drive(file_path):
-    """
-    Uploads the file specified by file_path to Google Drive.
-    """
     creds = authorize_google_drive()
     service = googleapiclient.discovery.build('drive', 'v3', credentials=creds)
     file_metadata = {'name': os.path.basename(file_path)}
@@ -88,13 +74,16 @@ def upload_to_drive(file_path):
     return result.get('id')
 
 ###############################################################################
-# Flask Routes: Telegram Webhook Endpoint
+# Flask Routes
 
+# Index route to confirm the app is running
+@app.route('/')
+def index():
+    return "Bot is running!"
+
+# Webhook route for Telegram updates
 @app.route('/' + TELEGRAM_TOKEN, methods=['POST'])
 def webhook():
-    """
-    Endpoint to receive updates from Telegram via webhook.
-    """
     if request.headers.get('content-type') == 'application/json':
         json_string = request.get_data().decode('utf-8')
         update = telebot.types.Update.de_json(json_string)
@@ -102,17 +91,24 @@ def webhook():
         return "!", 200
     return "Unsupported Media Type", 415
 
+# Manual route to set the webhook
+@app.route('/set_webhook')
+def set_webhook():
+    bot.remove_webhook()
+    success = bot.set_webhook(url=BASE_URL + TELEGRAM_TOKEN)
+    if success:
+        return jsonify({"status": "Webhook set", "url": BASE_URL + TELEGRAM_TOKEN})
+    else:
+        return jsonify({"status": "Failed to set webhook"}), 500
+
+# This can still be used to initialize the webhook on first request.
 @app.before_first_request
 def init_webhook():
-    """
-    Set the webhook when the Flask app receives its first request.
-    """
     bot.remove_webhook()
     bot.set_webhook(url=BASE_URL + TELEGRAM_TOKEN)
 
 ###############################################################################
-# For Local Development: Run via Flask's Development Server
+# Run the app
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
-    # Use debug=True for local testing; remove in production.
     app.run(host="0.0.0.0", port=port, debug=True)
