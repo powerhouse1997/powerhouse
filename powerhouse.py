@@ -9,7 +9,6 @@ import google.oauth2.credentials
 
 ###############################################################################
 # Configuration
-# Using your provided token directly for demonstration.
 TELEGRAM_TOKEN = '6438781804:AAGvcF5pp2gg2Svr5f0kpxvG9ZMoiG1WACc'
 BASE_URL = os.environ.get('BASE_URL', 'https://mirrorbot-d5ewf6egd3a5baby.canadacentral-01.azurewebsites.net/')
 if not BASE_URL.endswith('/'):
@@ -33,8 +32,7 @@ def authorize_google_drive():
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(google.auth.transport.requests.Request())
         else:
-            flow = google_auth_oauthlib.flow.InstalledAppFlow.from_client_secrets_file(
-                CREDS_FILE, SCOPES)
+            flow = google_auth_oauthlib.flow.InstalledAppFlow.from_client_secrets_file(CREDS_FILE, SCOPES)
             creds = flow.run_local_server(port=0)
         with open('token.json', 'w') as token:
             token.write(creds.to_json())
@@ -84,15 +82,16 @@ def index():
 # Webhook route for Telegram updates
 @app.route('/' + TELEGRAM_TOKEN, methods=['POST'])
 def webhook():
+    print("Incoming Webhook Request:", request.get_data().decode('utf-8'))  # Debugging logs
     if request.headers.get('content-type') == 'application/json':
         json_string = request.get_data().decode('utf-8')
         update = telebot.types.Update.de_json(json_string)
         bot.process_new_updates([update])
-        return "!", 200
+        return "OK", 200
     return "Unsupported Media Type", 415
 
 # Manual route to set the webhook
-@app.route('/set_webhook')
+@app.route('/set_webhook', methods=['GET'])
 def set_webhook():
     bot.remove_webhook()
     success = bot.set_webhook(url=BASE_URL + TELEGRAM_TOKEN)
@@ -101,7 +100,7 @@ def set_webhook():
     else:
         return jsonify({"status": "Failed to set webhook"}), 500
 
-# This can still be used to initialize the webhook on first request.
+# Initialize the webhook on app start
 @app.before_first_request
 def init_webhook():
     bot.remove_webhook()
