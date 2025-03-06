@@ -67,7 +67,8 @@ urllib3-secure-extra==0.1.0
 webdriver-manager==4.0.2
 websocket-client==1.8.0
 wsproto==1.2.0
-Flask==2.2.3
 gunicorn==20.1.0
 uvicorn==0.22.0
+Flask==2.0.3
+Werkzeug==2.0.3
 
