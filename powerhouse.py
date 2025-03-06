@@ -1,6 +1,9 @@
 import os
+import re
+import time
 from flask import Flask, request, jsonify
 import telebot
+from telebot.types import Message
 import googleapiclient.discovery
 import googleapiclient.http
 import google_auth_oauthlib.flow
@@ -39,20 +42,57 @@ def authorize_google_drive():
     return creds
 
 ###############################################################################
+# Helper Functions
+def is_download_link(text):
+    url_pattern = re.compile(r'https?://[^\s]+')
+    return bool(url_pattern.search(text))
+
+def is_allowed_command(text):
+    allowed_commands = ['/start', '/help', '/status']
+    return text in allowed_commands
+
+###############################################################################
 # Telegram Handlers
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     bot.reply_to(message, "Welcome! Send me a download link or a file, and I'll mirror it for you.")
 
+@bot.message_handler(commands=['status'])
+def show_status(message):
+    bot.reply_to(message, "🔍 Currently, there's no active operation.")
+
 @bot.message_handler(content_types=['text'])
-def handle_text(message):
-    link = message.text
-    bot.reply_to(message, "Mirroring your download link...")
-    # TODO: Add code to download and then upload
+def handle_text(message: Message):
+    if is_download_link(message.text):
+        # Stage 1: Preparing
+        sent_message = bot.reply_to(message, "🛠️ **Stage 1: Preparing...**")
+        time.sleep(2)  # Simulate preparing
+
+        # Stage 2: Downloading
+        bot.edit_message_text("📥 **Stage 2: Downloading...**", chat_id=message.chat.id, message_id=sent_message.message_id)
+        time.sleep(3)  # Simulate download time
+
+        # Stage 3: Processing
+        bot.edit_message_text("🔄 **Stage 3: Processing the file...**", chat_id=message.chat.id, message_id=sent_message.message_id)
+        time.sleep(2)  # Simulate processing time
+
+        # Stage 4: Uploading
+        bot.edit_message_text("📤 **Stage 4: Uploading to destination...**", chat_id=message.chat.id, message_id=sent_message.message_id)
+        time.sleep(3)  # Simulate upload time
+
+        # Completion
+        bot.edit_message_text("✅ **Task completed! File uploaded successfully.**", chat_id=message.chat.id, message_id=sent_message.message_id)
+    elif is_allowed_command(message.text):
+        if message.text == '/help':
+            bot.reply_to(message, "Here are the commands I support:\n/start - Start the bot\n/help - Get help\n/status - Check status.")
+        else:
+            bot.reply_to(message, "The bot is running smoothly!")
+    else:
+        bot.reply_to(message, "I only respond to valid download links or commands like /start, /help, and /status.")
 
 @bot.message_handler(content_types=['document'])
-def handle_document(message):
+def handle_document(message: Message):
     if not os.path.exists('downloads'):
         os.makedirs('downloads')
     file_info = bot.get_file(message.document.file_id)
@@ -60,8 +100,11 @@ def handle_document(message):
     file_path = os.path.join('downloads', message.document.file_name)
     with open(file_path, 'wb') as new_file:
         new_file.write(downloaded_file)
-    bot.reply_to(message, "File received. Uploading to Google Drive...")
-    upload_to_drive(file_path)
+
+    # Stage 4: Uploading
+    bot.reply_to(message, "📤 Uploading your file to Google Drive...")
+    file_id = upload_to_drive(file_path)
+    bot.reply_to(message, f"✅ Upload complete! File ID: {file_id}")
 
 def upload_to_drive(file_path):
     creds = authorize_google_drive()
@@ -74,33 +117,23 @@ def upload_to_drive(file_path):
 ###############################################################################
 # Flask Routes
 
-# Index route to confirm the app is running
 @app.route('/')
 def index():
     return "Bot is running!"
 
-# Webhook route for Telegram updates
 @app.route('/' + TELEGRAM_TOKEN, methods=['POST'])
 def webhook():
-    print("Incoming Webhook Request:", request.get_data().decode('utf-8'))  # Debugging logs
-    if request.headers.get('content-type') == 'application/json':
-        json_string = request.get_data().decode('utf-8')
-        update = telebot.types.Update.de_json(json_string)
-        bot.process_new_updates([update])
-        return "OK", 200
-    return "Unsupported Media Type", 415
+    json_string = request.get_data().decode('utf-8')
+    update = telebot.types.Update.de_json(json_string)
+    bot.process_new_updates([update])
+    return "OK", 200
 
-# Manual route to set the webhook
 @app.route('/set_webhook', methods=['GET'])
 def set_webhook():
     bot.remove_webhook()
     success = bot.set_webhook(url=BASE_URL + TELEGRAM_TOKEN)
-    if success:
-        return jsonify({"status": "Webhook set", "url": BASE_URL + TELEGRAM_TOKEN})
-    else:
-        return jsonify({"status": "Failed to set webhook"}), 500
+    return jsonify({"status": "Webhook set" if success else "Failed to set webhook"})
 
-# Initialize the webhook on app start
 @app.before_first_request
 def init_webhook():
     bot.remove_webhook()
@@ -109,5 +142,5 @@ def init_webhook():
 ###############################################################################
 # Run the app
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 8000))  # Use Azure's port
+    port = int(os.environ.get('PORT', 8000))
     app.run(host='0.0.0.0', port=port, debug=True)
