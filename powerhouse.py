@@ -1,8 +1,9 @@
 import os
 import re
 import time
-import shutil  # For calculating storage
-import requests  # For downloading files from links
+import uuid
+import psutil
+import requests
 from flask import Flask, request, jsonify
 import telebot
 from telebot.types import Message
@@ -23,15 +24,6 @@ if not BASE_URL.endswith('/'):
 # Initialize Telegram Bot and Flask App
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 app = Flask(__name__)
-
-# Track bot's status
-bot_status = {
-    "username": None,
-    "task": None,
-    "speed": None,
-    "total_storage": None,
-    "remaining_storage": None,
-}
 
 ###############################################################################
 # Google Drive Credentials & Authentication Setup
@@ -54,42 +46,62 @@ def authorize_google_drive():
 
 ###############################################################################
 # Helper Functions
-def is_download_link(text):
-    url_pattern = re.compile(r'https?://[^\s]+')
-    return bool(url_pattern.search(text))
 
-def is_allowed_command(text):
-    allowed_commands = ['/start', '/help', '/status']
-    return text in allowed_commands
+# Simulates a dynamic progress bar
+def create_progress_bar(progress, total, length=20):
+    completed = int((progress / total) * length)
+    bar = f"[{'█' * completed}{'-' * (length - completed)}] {int((progress / total) * 100)}%"
+    return bar
 
-def calculate_speed(start_time, file_size):
-    elapsed_time = time.time() - start_time
-    speed = file_size / elapsed_time  # bytes per second
-    return f"{speed / (1024 * 1024):.2f} MB/s"  # Convert to MB/s
+# Handles file downloads and displays a live progress bar
+def download_file(url, chat_id, message_id):
+    response = requests.get(url, stream=True)
+    total_size = int(response.headers.get('content-length', 0))
+    file_name = sanitize_file_name(response.url.split("/")[-1]) or f"file_{uuid.uuid4().hex}.bin"
+    file_path = os.path.join('downloads', file_name)
 
-def calculate_storage():
-    total, used, free = shutil.disk_usage(os.getcwd())
-    return {
-        "total": f"{total / (1024 * 1024 * 1024):.2f} GB",
-        "used": f"{used / (1024 * 1024 * 1024):.2f} GB",
-        "free": f"{free / (1024 * 1024 * 1024):.2f} GB",
-    }
+    with open(file_path, 'wb') as f:
+        downloaded_size = 0
+        for chunk in response.iter_content(chunk_size=1024 * 1024):  # 1MB chunks
+            f.write(chunk)
+            downloaded_size += len(chunk)
+            progress_bar = create_progress_bar(downloaded_size, total_size)
+            bot.edit_message_text(f"📥 Downloading...\n{progress_bar}", chat_id=chat_id, message_id=message_id)
 
-###############################################################################
-# Google Drive Upload Function with Shareable Link
-def upload_to_drive(file_path):
+    return file_path
+
+# Handles file uploads and displays a live progress bar
+def upload_to_drive(file_path, chat_id, message_id):
     creds = authorize_google_drive()
     service = googleapiclient.discovery.build('drive', 'v3', credentials=creds)
     file_metadata = {'name': os.path.basename(file_path)}
     media = googleapiclient.http.MediaFileUpload(file_path, resumable=True)
-    result = service.files().create(body=file_metadata, media_body=media, fields='id').execute()
 
-    # Generate a shareable link
-    file_id = result.get('id')
+    request = service.files().create(body=file_metadata, media_body=media, fields='id')
+    response = None
+    total_size = os.path.getsize(file_path)
+    uploaded_size = 0
+
+    while not response:
+        status, response = request.next_chunk()
+        if status:
+            uploaded_size = int(status.resumable_progress)
+            progress_bar = create_progress_bar(uploaded_size, total_size)
+            bot.edit_message_text(f"📤 Uploading to Google Drive...\n{progress_bar}", chat_id=chat_id, message_id=message_id)
+
+    # Generate shareable link
+    file_id = response.get('id')
     permission = {'type': 'anyone', 'role': 'reader'}
     service.permissions().create(fileId=file_id, body=permission).execute()
     shareable_link = f"https://drive.google.com/file/d/{file_id}/view?usp=sharing"
     return shareable_link
+
+# Sanitizes long file names
+def sanitize_file_name(file_name, max_length=50):
+    if len(file_name) > max_length:
+        base_name, ext = os.path.splitext(file_name)
+        file_name = base_name[:max_length] + ext
+    return file_name
 
 ###############################################################################
 # Telegram Handlers
@@ -98,78 +110,27 @@ def upload_to_drive(file_path):
 def send_welcome(message):
     bot.reply_to(message, "Welcome! Send me a download link or a file, and I'll mirror it for you.")
 
-@bot.message_handler(commands=['status'])
-def show_status(message):
-    storage = calculate_storage()
-    bot.reply_to(
-        message,
-        f"📊 **Bot Status:**\n"
-        f"- Current Task: {bot_status['task'] or 'Idle'}\n"
-        f"- User: {bot_status['username'] or 'N/A'}\n"
-        f"- Speed: {bot_status['speed'] or 'N/A'}\n"
-        f"- Total Storage: {storage['total']}\n"
-        f"- Used Storage: {storage['used']}\n"
-        f"- Free Storage: {storage['free']}"
-    )
-
 @bot.message_handler(content_types=['text'])
 def handle_text(message: Message):
     if is_download_link(message.text):
-        bot_status["username"] = message.from_user.username or "Unknown"
-        bot_status["task"] = "Downloading"
+        sent_message = bot.reply_to(message, "🛠️ **Preparing to download...**")
 
-        # Stage 1: Download File
-        sent_message = bot.reply_to(message, "🛠️ Starting download from link...")
         try:
-            start_time = time.time()
-            response = requests.get(message.text, stream=True)
-            file_size = int(response.headers.get('content-length', 0))
-            file_name = message.text.split("/")[-1]
-            file_path = os.path.join("downloads", file_name)
+            # Download file with progress bar
+            file_path = download_file(message.text, chat_id=message.chat.id, message_id=sent_message.message_id)
 
-            if not os.path.exists("downloads"):
-                os.makedirs("downloads")
+            # Upload file with progress bar
+            mirror_link = upload_to_drive(file_path, chat_id=message.chat.id, message_id=sent_message.message_id)
 
-            with open(file_path, "wb") as file:
-                downloaded = 0
-                for chunk in response.iter_content(1024):
-                    file.write(chunk)
-                    downloaded += len(chunk)
-                    bot_status["speed"] = calculate_speed(start_time, downloaded)
-                    progress = int((downloaded / file_size) * 100)
-                    bot.edit_message_text(
-                        f"📥 Downloading: {progress}%\nSpeed: {bot_status['speed']}",
-                        chat_id=message.chat.id,
-                        message_id=sent_message.message_id,
-                    )
-
-            # Uploading file to Google Drive
-            bot_status["task"] = "Uploading"
-            bot.edit_message_text("📤 Uploading to Google Drive...", chat_id=message.chat.id, message_id=sent_message.message_id)
-            mirror_link = upload_to_drive(file_path)
-            bot_status["task"] = "Idle"
-            bot.reply_to(message, f"✅ Upload complete! Here is your mirror link:\n{mirror_link}")
+            # Completion message
+            bot.edit_message_text(f"✅ **Task Completed!**\n"
+                                  f"👤 User: @{message.from_user.username or 'Unknown'}\n"
+                                  f"🔗 Mirror Link: {mirror_link}",
+                                  chat_id=message.chat.id, message_id=sent_message.message_id)
         except Exception as e:
             bot.reply_to(message, f"❌ An error occurred: {str(e)}")
     else:
         bot.reply_to(message, "I only respond to valid download links or commands like /start, /help, and /status.")
-
-@bot.message_handler(content_types=['document'])
-def handle_document(message: Message):
-    if not os.path.exists('downloads'):
-        os.makedirs('downloads')
-    file_info = bot.get_file(message.document.file_id)
-    downloaded_file = bot.download_file(file_info.file_path)
-    file_path = os.path.join('downloads', message.document.file_name)
-    with open(file_path, 'wb') as new_file:
-        new_file.write(downloaded_file)
-
-    bot.reply_to(message, "📤 Uploading your file to Google Drive...")
-    try:
-        mirror_link = upload_to_drive(file_path)
-        bot.reply_to(message, f"✅ Upload complete! Here is your mirror link:\n{mirror_link}")
-    except Exception as e:
-        bot.reply_to(message, f"❌ An error occurred while uploading the file: {str(e)}")
 
 ###############################################################################
 # Flask Routes
