@@ -12,23 +12,40 @@ import googleapiclient.http
 import google_auth_oauthlib.flow
 import google.auth.transport.requests
 import google.oauth2.credentials
+import redis
 
 ###############################################################################
 # Configuration
-TELEGRAM_TOKEN = '6438781804:AAGvcF5pp2gg2Svr5f0kpxvG9ZMoiG1WACc'
-BASE_URL = os.environ.get('BASE_URL', 'https://mirrorbot-d5ewf6egd3a5baby.canadacentral-01.azurewebsites.net/')
-if not BASE_URL.endswith('/'):
-    BASE_URL += '/'
+TELEGRAM_TOKEN = 'your-telegram-token'
+BASE_URL = os.environ.get('BASE_URL', 'https://your-base-url/')
+REDIS_HOST = os.getenv('REDIS_HOST', 'your-redis-hostname')
+REDIS_PORT = int(os.getenv('REDIS_PORT', 6380))
+REDIS_PASSWORD = os.getenv('REDIS_PASSWORD', 'your-redis-primary-key')
 
 ###############################################################################
-# Initialize Telegram Bot and Flask App
-bot = telebot.TeleBot(TELEGRAM_TOKEN)
+# Initialize Flask App and Redis Client
 app = Flask(__name__)
+redis_client = redis.StrictRedis(
+    host=REDIS_HOST,
+    port=REDIS_PORT,
+    password=REDIS_PASSWORD,
+    ssl=True,  # Ensure SSL is used for secure connection
+    decode_responses=True
+)
+
+# Fix the decorator
+@app.before_request
+def before_request_func():
+    print("This code runs before each request.")
+
+###############################################################################
+# Initialize Telegram Bot
+bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
 ###############################################################################
 # Google Drive Credentials & Authentication Setup
 SCOPES = ['https://www.googleapis.com/auth/drive.file']
-CREDS_FILE = os.path.join(os.path.dirname(__file__), 'jarvis-400615-5d22aa4feea3.json')
+CREDS_FILE = os.path.join(os.path.dirname(__file__), 'credentials.json')
 
 def authorize_google_drive():
     creds = None
@@ -113,24 +130,26 @@ def send_welcome(message):
 @bot.message_handler(content_types=['text'])
 def handle_text(message: Message):
     if is_download_link(message.text):
-        sent_message = bot.reply_to(message, "🛠️ **Preparing to download...**")
+        sent_message = bot.reply_to(message, "🛠️ **Preparing to process the link...**")
 
         try:
-            # Download file with progress bar
+            # Download file with live progress
             file_path = download_file(message.text, chat_id=message.chat.id, message_id=sent_message.message_id)
 
-            # Upload file with progress bar
+            # Upload file with live progress
             mirror_link = upload_to_drive(file_path, chat_id=message.chat.id, message_id=sent_message.message_id)
 
-            # Completion message
+            # Send success message
             bot.edit_message_text(f"✅ **Task Completed!**\n"
                                   f"👤 User: @{message.from_user.username or 'Unknown'}\n"
                                   f"🔗 Mirror Link: {mirror_link}",
                                   chat_id=message.chat.id, message_id=sent_message.message_id)
         except Exception as e:
-            bot.reply_to(message, f"❌ An error occurred: {str(e)}")
+            bot.edit_message_text(f"❌ An error occurred: {str(e)}", chat_id=message.chat.id, message_id=sent_message.message_id)
+            print(f"Error processing link: {str(e)}")  # Debug log
     else:
         bot.reply_to(message, "I only respond to valid download links or commands like /start, /help, and /status.")
+        print(f"Unsupported message: {message.text}")  # Debug log
 
 ###############################################################################
 # Flask Routes
