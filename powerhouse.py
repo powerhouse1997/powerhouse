@@ -170,7 +170,7 @@ def webhook():
 def set_webhook():
     bot.remove_webhook()
     success = bot.set_webhook(url=BASE_URL + TELEGRAM_TOKEN)
-    return jsonify({"status": "Webhook set" if success else "Failed to set webhook", "url": BASE_URL + TELEGRAM_TOKEN})
+    return jsonify({"status": "Webhook set" if success else "Failed to set webhook", "url": BASE_URL + TELEGRAM TOKEN})
 
 # Removed the before_first_request decorator as it caused an issue
 
