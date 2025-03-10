@@ -53,7 +53,7 @@ def authorize_google_drive():
     if os.path.exists('token.json'):
         creds = google.oauth2.credentials.Credentials.from_authorized_user_file('token.json', SCOPES)
     if not creds or not creds.valid:
-        if creds and creds expired and creds.refresh_token:
+        if creds and creds.expired and creds.refresh_token:
             creds.refresh(google.auth.transport.requests.Request())
         else:
             flow = google_auth_oauthlib.flow.InstalledAppFlow.from_client_secrets_file(CREDS_FILE, SCOPES)
@@ -116,8 +116,7 @@ def upload_to_drive(file_path, chat_id, message_id):
 
 # Sanitizes long file names
 def sanitize_file_name(file_name, max_length=50):
-    if len(file_name) > max_length:
-        base_name, ext = os.path.splitext(file_name)
+    if len(file_name) > max_length, base_name, ext = os.path.splitext(file_name)
         file_name = base_name[:max_length] + ext
     return file_name
 
@@ -172,10 +171,7 @@ def set_webhook():
     success = bot.set_webhook(url=BASE_URL + TELEGRAM_TOKEN)
     return jsonify({"status": "Webhook set" if success else "Failed to set webhook", "url": BASE_URL + TELEGRAM_TOKEN})
 
-@app.before_first_request
-def init_webhook():
-    bot.remove_webhook()
-    bot.set_webhook(url=BASE_URL + TELEGRAM_TOKEN)
+# Removed the before_first_request decorator as it caused an issue
 
 ###############################################################################
 # Run the app
