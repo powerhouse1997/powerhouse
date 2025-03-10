@@ -13,6 +13,7 @@ import google_auth_oauthlib.flow
 import google.auth.transport.requests
 import google.oauth2.credentials
 import redis
+from urllib.parse import quote as url_quote  # Updated import
 
 ###############################################################################
 # Configuration
@@ -52,7 +53,7 @@ def authorize_google_drive():
     if os.path.exists('token.json'):
         creds = google.oauth2.credentials.Credentials.from_authorized_user_file('token.json', SCOPES)
     if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
+        if creds and creds expired and creds.refresh_token:
             creds.refresh(google.auth.transport.requests.Request())
         else:
             flow = google_auth_oauthlib.flow.InstalledAppFlow.from_client_secrets_file(CREDS_FILE, SCOPES)
@@ -165,11 +166,11 @@ def webhook():
     bot.process_new_updates([update])
     return "OK", 200
 
-@app.route('/set_webhook', methods=['GET'])
+@app.route('/set_webhook', methods=['GET', 'POST'])
 def set_webhook():
     bot.remove_webhook()
     success = bot.set_webhook(url=BASE_URL + TELEGRAM_TOKEN)
-    return jsonify({"status": "Webhook set" if success else "Failed to set webhook"})
+    return jsonify({"status": "Webhook set" if success else "Failed to set webhook", "url": BASE_URL + TELEGRAM_TOKEN})
 
 @app.before_first_request
 def init_webhook():
