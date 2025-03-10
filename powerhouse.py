@@ -116,7 +116,8 @@ def upload_to_drive(file_path, chat_id, message_id):
 
 # Sanitizes long file names
 def sanitize_file_name(file_name, max_length=50):
-    if len(file_name) > max_length, base_name, ext = os.path.splitext(file_name)
+    if len(file_name) > max_length:
+        base_name, ext = os.path.splitext(file_name)
         file_name = base_name[:max_length] + ext
     return file_name
 
