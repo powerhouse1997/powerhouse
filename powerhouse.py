@@ -13,7 +13,7 @@ import google_auth_oauthlib.flow
 import google.auth.transport.requests
 import google.oauth2.credentials
 import redis
-from urllib.parse import quote as url_quote  # Updated import
+from urllib.parse import quote as url_quote
 
 ###############################################################################
 # Configuration
@@ -34,7 +34,6 @@ redis_client = redis.StrictRedis(
     decode_responses=True
 )
 
-# Fix the decorator
 @app.before_request
 def before_request_func():
     print("This code runs before each request.")
@@ -73,46 +72,56 @@ def create_progress_bar(progress, total, length=20):
 
 # Handles file downloads and displays a live progress bar
 def download_file(url, chat_id, message_id):
-    response = requests.get(url, stream=True)
-    total_size = int(response.headers.get('content-length', 0))
-    file_name = sanitize_file_name(response.url.split("/")[-1]) or f"file_{uuid.uuid4().hex}.bin"
-    file_path = os.path.join('downloads', file_name)
+    try:
+        response = requests.get(url, stream=True)
+        total_size = int(response.headers.get('content-length', 0))
+        file_name = sanitize_file_name(response.url.split("/")[-1]) or f"file_{uuid.uuid4().hex}.bin"
+        file_path = os.path.join('downloads', file_name)
 
-    with open(file_path, 'wb') as f:
-        downloaded_size = 0
-        for chunk in response.iter_content(chunk_size=1024 * 1024):  # 1MB chunks
-            f.write(chunk)
-            downloaded_size += len(chunk)
-            progress_bar = create_progress_bar(downloaded_size, total_size)
-            bot.edit_message_text(f"📥 Downloading...\n{progress_bar}", chat_id=chat_id, message_id=message_id)
+        with open(file_path, 'wb') as f:
+            downloaded_size = 0
+            for chunk in response.iter_content(chunk_size=1024 * 1024):  # 1MB chunks
+                f.write(chunk)
+                downloaded_size += len(chunk)
+                progress_bar = create_progress_bar(downloaded_size, total_size)
+                bot.edit_message_text(f"📥 Downloading...\n{progress_bar}", chat_id=chat_id, message_id=message_id)
 
-    return file_path
+        return file_path
+    except Exception as e:
+        print(f"Error downloading file: {str(e)}")
+        bot.edit_message_text(f"❌ An error occurred while downloading: {str(e)}", chat_id=chat_id, message_id=message_id)
+        return None
 
 # Handles file uploads and displays a live progress bar
 def upload_to_drive(file_path, chat_id, message_id):
-    creds = authorize_google_drive()
-    service = googleapiclient.discovery.build('drive', 'v3', credentials=creds)
-    file_metadata = {'name': os.path.basename(file_path)}
-    media = googleapiclient.http.MediaFileUpload(file_path, resumable=True)
+    try:
+        creds = authorize_google_drive()
+        service = googleapiclient.discovery.build('drive', 'v3', credentials=creds)
+        file_metadata = {'name': os.path.basename(file_path)}
+        media = googleapiclient.http.MediaFileUpload(file_path, resumable=True)
 
-    request = service.files().create(body=file_metadata, media_body=media, fields='id')
-    response = None
-    total_size = os.path.getsize(file_path)
-    uploaded_size = 0
+        request = service.files().create(body=file_metadata, media_body=media, fields='id')
+        response = None
+        total_size = os.path.getsize(file_path)
+        uploaded_size = 0
 
-    while not response:
-        status, response = request.next_chunk()
-        if status:
-            uploaded_size = int(status.resumable_progress)
-            progress_bar = create_progress_bar(uploaded_size, total_size)
-            bot.edit_message_text(f"📤 Uploading to Google Drive...\n{progress_bar}", chat_id=chat_id, message_id=message_id)
+        while not response:
+            status, response = request.next_chunk()
+            if status:
+                uploaded_size = int(status.resumable_progress)
+                progress_bar = create_progress_bar(uploaded_size, total_size)
+                bot.edit_message_text(f"📤 Uploading to Google Drive...\n{progress_bar}", chat_id=chat_id, message_id=message_id)
 
-    # Generate shareable link
-    file_id = response.get('id')
-    permission = {'type': 'anyone', 'role': 'reader'}
-    service.permissions().create(fileId=file_id, body=permission).execute()
-    shareable_link = f"https://drive.google.com/file/d/{file_id}/view?usp=sharing"
-    return shareable_link
+        # Generate shareable link
+        file_id = response.get('id')
+        permission = {'type': 'anyone', 'role': 'reader'}
+        service.permissions().create(fileId=file_id, body=permission).execute()
+        shareable_link = f"https://drive.google.com/file/d/{file_id}/view?usp=sharing"
+        return shareable_link
+    except Exception as e:
+        print(f"Error uploading file: {str(e)}")
+        bot.edit_message_text(f"❌ An error occurred while uploading: {str(e)}", chat_id=chat_id, message_id=message_id)
+        return None
 
 # Sanitizes long file names
 def sanitize_file_name(file_name, max_length=50):
@@ -128,6 +137,10 @@ def sanitize_file_name(file_name, max_length=50):
 def send_welcome(message):
     bot.reply_to(message, "Welcome! Send me a download link or a file, and I'll mirror it for you.")
 
+def is_download_link(text):
+    url_pattern = re.compile(r'^(https?://)?(www\.)?([a-zA-Z0-9-]{1,63}\.){1,8}[a-zA-Z]{2,6}(/[\w\-.~:?#%&/=]*)?$')
+    return re.match(url_pattern, text) is not None
+
 @bot.message_handler(content_types=['text'])
 def handle_text(message: Message):
     if is_download_link(message.text):
@@ -137,14 +150,20 @@ def handle_text(message: Message):
             # Download file with live progress
             file_path = download_file(message.text, chat_id=message.chat.id, message_id=sent_message.message_id)
 
-            # Upload file with live progress
-            mirror_link = upload_to_drive(file_path, chat_id=message.chat.id, message_id=sent_message.message_id)
+            if file_path:
+                # Upload file with live progress
+                mirror_link = upload_to_drive(file_path, chat_id=message.chat.id, message_id=sent_message.message_id)
 
-            # Send success message
-            bot.edit_message_text(f"✅ **Task Completed!**\n"
-                                  f"👤 User: @{message.from_user.username or 'Unknown'}\n"
-                                  f"🔗 Mirror Link: {mirror_link}",
-                                  chat_id=message.chat.id, message_id=sent_message.message_id)
+                if mirror_link:
+                    # Send success message
+                    bot.edit_message_text(f"✅ **Task Completed!**\n"
+                                          f"👤 User: @{message.from_user.username or 'Unknown'}\n"
+                                          f"🔗 Mirror Link: {mirror_link}",
+                                          chat_id=message.chat.id, message_id=sent_message.message_id)
+                else:
+                    bot.edit_message_text(f"❌ An error occurred while uploading the file.", chat_id=message.chat.id, message_id=sent_message.message_id)
+            else:
+                bot.edit_message_text(f"❌ An error occurred while downloading the file.", chat_id=message.chat.id, message_id=sent_message.message_id)
         except Exception as e:
             bot.edit_message_text(f"❌ An error occurred: {str(e)}", chat_id=message.chat.id, message_id=sent_message.message_id)
             print(f"Error processing link: {str(e)}")  # Debug log
