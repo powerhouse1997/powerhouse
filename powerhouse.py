@@ -52,7 +52,7 @@ def authorize_google_drive():
     creds = None
     if os.path.exists('token.json'):
         creds = google.oauth2.credentials.Credentials.from_authorized_user_file('token.json', SCOPES)
-    if not creds or not creds valid:
+    if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(google.auth.transport.requests.Request())
         else:
@@ -83,7 +83,7 @@ def download_file(url, chat_id, message_id):
         for chunk in response.iter_content(chunk_size=1024 * 1024):  # 1MB chunks
             f.write(chunk)
             downloaded_size += len(chunk)
-            progress_bar create_progress_bar(downloaded_size, total_size)
+            progress_bar = create_progress_bar(downloaded_size, total_size)
             bot.edit_message_text(f"📥 Downloading...\n{progress_bar}", chat_id=chat_id, message_id=message_id)
 
     return file_path
@@ -111,7 +111,7 @@ def upload_to_drive(file_path, chat_id, message_id):
     file_id = response.get('id')
     permission = {'type': 'anyone', 'role': 'reader'}
     service.permissions().create(fileId=file_id, body=permission).execute()
-    shareable link = f"https://drive.google.com/file/d/{file_id}/view?usp=sharing"
+    shareable_link = f"https://drive.google.com/file/d/{file_id}/view?usp=sharing"
     return shareable_link
 
 # Sanitizes long file names
@@ -168,7 +168,7 @@ def webhook():
 
 @app.route('/set_webhook', methods=['GET', 'POST'])
 def set_webhook():
-    bot remove_webhook()
+    bot.remove_webhook()
     success = bot.set_webhook(url=BASE_URL + TELEGRAM_TOKEN)
     return jsonify({"status": "Webhook set" if success else "Failed to set webhook", "url": BASE_URL + TELEGRAM_TOKEN})
 
