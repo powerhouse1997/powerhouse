@@ -17,12 +17,11 @@ from urllib.parse import quote as url_quote
 
 ###############################################################################
 # Configuration
-TELEGRAM_TOKEN = 'YOUR_TELEGRAM_TOKEN'
-BASE_URL = os.environ.get('BASE_URL', 'https://your-app-url.com/')
-REDIS_HOST = os.getenv('REDIS_HOST', 'your-redis-host')
-REDIS_PORT = int(os.getenv('REDIS_PORT', 6380))
-REDIS_PASSWORD = os.getenv('REDIS_PASSWORD', 'your-redis-password')
-
+TELEGRAM_TOKEN = '6438781804:AAGvcF5pp2gg2Svr5f0kpxvG9ZMoiG1WACc' 
+BASE_URL = os.environ.get('BASE_URL', 'https://mirrorbot-d5ewf6egd3a5baby.canadacentral-01.azurewebsites.net/') 
+REDIS_HOST = os.getenv('REDIS_HOST', 'powerhouse.redis.cache.windows.net') 
+REDIS_PORT = int(os.getenv('REDIS_PORT', 6380)) 
+REDIS_PASSWORD = os.getenv('REDIS_PASSWORD', 'c3w6mCF18yaVK4UDPs71SCfvWocGeJVKMAzCaA46bvI=')
 ###############################################################################
 # Initialize Flask App and Redis Client
 app = Flask(__name__)
