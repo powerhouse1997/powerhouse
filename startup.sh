@@ -1,7 +1,9 @@
 #!/bin/bash
 
-# Install dependencies
-pip install -r requirements.txt
+# Activate virtual environment (if any)
+if [ -d "antenv" ]; then
+    source antenv/bin/activate
+fi
 
-# Start the Flask app
-gunicorn -w 4 -b 0.0.0.0:$PORT app:app
+# Run Gunicorn to serve the bot
+gunicorn --bind=0.0.0.0:8000 app:app
