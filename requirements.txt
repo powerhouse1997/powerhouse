@@ -9,3 +9,7 @@ pytelegrambotapi
 flask==3.0.0
 werkzeug==3.0.1
 pyodbc
+azure-identity 
+python-dotenv 
+azure-storage-blob 
+python-telegram-bot
