@@ -1,194 +1,141 @@
 import os
-import re
-import time
-import uuid
-import psutil
-import requests
-import redis
-import googleapiclient.discovery
-import googleapiclient.http
-import google_auth_oauthlib.flow
-import google.auth.transport.requests
-import google.oauth2.credentials
-from flask import Flask, request, jsonify
-import telebot
+import logging
 import pyodbc
 import azure.identity
-from telebot.types import Message
-from urllib.parse import quote as url_quote
+from dotenv import load_dotenv
+from azure.storage.blob import BlobServiceClient
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext
 
-###############################################################################
-# Configuration (Uses Azure Environment Variables)
-TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')  # Set this in Azure App Service
-BASE_URL = os.getenv('BASE_URL')  # Set this in Azure App Service
-REDIS_HOST = os.getenv('REDIS_HOST')
-REDIS_PORT = int(os.getenv('REDIS_PORT', 6380))
-REDIS_PASSWORD = os.getenv('REDIS_PASSWORD')
+# Load environment variables
+load_dotenv()
 
-if not TELEGRAM_TOKEN or not BASE_URL:
-    raise ValueError("⚠️ Missing TELEGRAM_TOKEN or BASE_URL. Set these in Azure.")
+# Telegram Bot Token
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-###############################################################################
-# Initialize Flask App and Redis Client
-app = Flask(__name__)
-redis_client = redis.StrictRedis(
-    host=REDIS_HOST,
-    port=REDIS_PORT,
-    password=REDIS_PASSWORD,
-    ssl=True,
-    decode_responses=True
-)
+# Azure SQL Configuration
+SQL_SERVER = os.getenv("AZURE_SQL_SERVER")
+SQL_DATABASE = os.getenv("AZURE_SQL_DATABASE")
 
-###############################################################################
-# Initialize Telegram Bot
-bot = telebot.TeleBot(TELEGRAM_TOKEN)
+# Azure Blob Storage
+AZURE_STORAGE_CONNECTION_STRING = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+blob_service_client = BlobServiceClient.from_connection_string(AZURE_STORAGE_CONNECTION_STRING)
 
-# Get Azure AD Token
-credential = azure.identity.DefaultAzureCredential()
-token = credential.get_token("https://database.windows.net/").token
+# Setup Logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# Connection string (No password needed)
-conn_str = "DRIVER={ODBC Driver 18 for SQL Server};SERVER=tcp:powerhousesqll.database.windows.net,1433;DATABASE=powerhouse;Encrypt=yes;TrustServerCertificate=no;Connection Timeout=30;"
-conn = pyodbc.connect(conn_str, attrs_before={"AccessToken": token})
+# Get Azure AD Token for SQL Authentication
+try:
+    credential = azure.identity.DefaultAzureCredential()
+    token = credential.get_token("https://database.windows.net/").token
+except Exception as e:
+    logger.error("Error getting Azure AD token: %s", e)
+    exit()
 
-# Test the connection
-cursor = conn.cursor()
-cursor.execute("SELECT TOP 1 * FROM sys.tables")  # Sample query
-print(cursor.fetchall())
+# Connect to Azure SQL Database
+try:
+    conn_str = f"DRIVER={{ODBC Driver 18 for SQL Server}};SERVER=tcp:{SQL_SERVER},1433;DATABASE={SQL_DATABASE};Encrypt=yes;TrustServerCertificate=no;Connection Timeout=30;"
+    conn = pyodbc.connect(conn_str, attrs_before={"AccessToken": token})
+    cursor = conn.cursor()
+    logger.info("✅ Connected to Azure SQL Database successfully.")
+except Exception as e:
+    logger.error("❌ Database connection failed: %s", e)
+    exit()
 
-###############################################################################
-# Google Drive Credentials & Authentication Setup
-SCOPES = ['https://www.googleapis.com/auth/drive.file']
-CREDS_FILE = 'credentials.json'  # Ensure this file is uploaded to Azure
-
-def authorize_google_drive():
-    creds = None
-    if os.path.exists('token.json'):
-        creds = google.oauth2.credentials.Credentials.from_authorized_user_file('token.json', SCOPES)
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(google.auth.transport.requests.Request())
-        else:
-            flow = google_auth_oauthlib.flow.InstalledAppFlow.from_client_secrets_file(CREDS_FILE, SCOPES)
-            creds = flow.run_local_server(port=0)
-        with open('token.json', 'w') as token:
-            token.write(creds.to_json())
-    return creds
-
-###############################################################################
-# Helper Functions
-
-def create_progress_bar(progress, total, length=20):
-    completed = int((progress / total) * length)
-    return f"[{'█' * completed}{'-' * (length - completed)}] {int((progress / total) * 100)}%"
-
-def download_file(url, chat_id, message_id):
+# Create Table (if not exists)
+def create_table():
     try:
-        response = requests.get(url, stream=True)
-        total_size = int(response.headers.get('content-length', 0))
-        file_name = sanitize_file_name(response.url.split("/")[-1]) or f"file_{uuid.uuid4().hex}.bin"
-        
-        download_dir = 'downloads'
-        os.makedirs(download_dir, exist_ok=True)
-        file_path = os.path.join(download_dir, file_name)
-
-        with open(file_path, 'wb') as f:
-            downloaded_size = 0
-            for chunk in response.iter_content(chunk_size=1024 * 1024):
-                f.write(chunk)
-                downloaded_size += len(chunk)
-                progress_bar = create_progress_bar(downloaded_size, total_size)
-                bot.edit_message_text(f"📥 Downloading...\n{progress_bar}", chat_id=chat_id, message_id=message_id)
-
-        return file_path
+        cursor.execute("""
+            IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'DownloadLinks')
+            CREATE TABLE DownloadLinks (
+                id INT IDENTITY(1,1) PRIMARY KEY,
+                user_id NVARCHAR(255),
+                original_link NVARCHAR(MAX),
+                fast_link NVARCHAR(MAX),
+                created_at DATETIME DEFAULT GETDATE()
+            );
+        """)
+        conn.commit()
+        logger.info("✅ Table checked/created successfully.")
     except Exception as e:
-        bot.edit_message_text(f"❌ Download failed: {str(e)}", chat_id=chat_id, message_id=message_id)
+        logger.error("❌ Table creation failed: %s", e)
+
+create_table()
+
+# Store a new link
+def store_link(user_id, original_link, fast_link):
+    try:
+        cursor.execute(
+            "INSERT INTO DownloadLinks (user_id, original_link, fast_link) VALUES (?, ?, ?)",
+            (user_id, original_link, fast_link),
+        )
+        conn.commit()
+        logger.info(f"✅ Link stored successfully for user {user_id}.")
+    except Exception as e:
+        logger.error("❌ Error storing link: %s", e)
+
+# Retrieve the latest fast link for a user
+def get_fast_link(user_id):
+    try:
+        cursor.execute(
+            "SELECT fast_link FROM DownloadLinks WHERE user_id = ? ORDER BY created_at DESC",
+            (user_id,),
+        )
+        row = cursor.fetchone()
+        return row[0] if row else None
+    except Exception as e:
+        logger.error("❌ Error retrieving link: %s", e)
         return None
 
-def upload_to_drive(file_path, chat_id, message_id):
+# Upload File to Azure Blob Storage
+def upload_to_blob(file_path, blob_name):
     try:
-        creds = authorize_google_drive()
-        service = googleapiclient.discovery.build('drive', 'v3', credentials=creds)
-        file_metadata = {'name': os.path.basename(file_path)}
-        media = googleapiclient.http.MediaFileUpload(file_path, resumable=True)
-
-        request = service.files().create(body=file_metadata, media_body=media, fields='id')
-        response = None
-        total_size = os.path.getsize(file_path)
-        uploaded_size = 0
-
-        while not response:
-            status, response = request.next_chunk()
-            if status:
-                uploaded_size = int(status.resumable_progress)
-                progress_bar = create_progress_bar(uploaded_size, total_size)
-                bot.edit_message_text(f"📤 Uploading to Google Drive...\n{progress_bar}", chat_id=chat_id, message_id=message_id)
-
-        file_id = response.get('id')
-        service.permissions().create(fileId=file_id, body={'type': 'anyone', 'role': 'reader'}).execute()
-        return f"https://drive.google.com/file/d/{file_id}/view?usp=sharing"
+        blob_client = blob_service_client.get_blob_client(container="downloads", blob=blob_name)
+        with open(file_path, "rb") as data:
+            blob_client.upload_blob(data, overwrite=True)
+        blob_url = blob_client.url
+        logger.info(f"✅ File uploaded to Blob Storage: {blob_url}")
+        return blob_url
     except Exception as e:
-        bot.edit_message_text(f"❌ Upload failed: {str(e)}", chat_id=chat_id, message_id=message_id)
+        logger.error("❌ Blob upload failed: %s", e)
         return None
 
-def sanitize_file_name(file_name, max_length=50):
-    if len(file_name) > max_length:
-        base_name, ext = os.path.splitext(file_name)
-        file_name = base_name[:max_length] + ext
-    return file_name
+# Telegram Bot Commands
+async def start(update: Update, context: CallbackContext) -> None:
+    await update.message.reply_text("Hello! Send me a download link and I'll store it securely.")
 
-###############################################################################
-# Telegram Handlers
+async def handle_message(update: Update, context: CallbackContext) -> None:
+    user_id = str(update.message.chat_id)
+    original_link = update.message.text
 
-@bot.message_handler(commands=['start'])
-def send_welcome(message):
-    bot.reply_to(message, "Welcome! Send me a download link, and I'll mirror it for you.")
+    if original_link.startswith("http"):
+        fast_link = f"https://cdn.example.com/{original_link.split('/')[-1]}"  # Simulated fast link
+        store_link(user_id, original_link, fast_link)
 
-def is_download_link(text):
-    return bool(re.match(r'^(https?://)?(www\.)?([\w\-]+\.)+[a-zA-Z]{2,6}(/[\w\-.~:?#%&/=]*)?$', text))
-
-@bot.message_handler(content_types=['text'])
-def handle_text(message: Message):
-    if is_download_link(message.text):
-        sent_message = bot.reply_to(message, "🛠️ Preparing...")
-
-        try:
-            file_path = download_file(message.text, message.chat.id, sent_message.message_id)
-            if file_path:
-                mirror_link = upload_to_drive(file_path, message.chat.id, sent_message.message_id)
-                if mirror_link:
-                    bot.edit_message_text(f"✅ Completed!\n🔗 [Mirror Link]({mirror_link})", 
-                                          chat_id=message.chat.id, message_id=sent_message.message_id, parse_mode="Markdown")
-                else:
-                    bot.edit_message_text(f"❌ Upload error.", chat_id=message.chat.id, message_id=sent_message.message_id)
-            else:
-                bot.edit_message_text(f"❌ Download error.", chat_id=message.chat.id, message_id=sent_message.message_id)
-        except Exception as e:
-            bot.edit_message_text(f"❌ Error: {str(e)}", chat_id=message.chat.id, message_id=sent_message.message_id)
+        await update.message.reply_text(f"✅ Your link has been stored! Use this faster link:\n{fast_link}")
     else:
-        bot.reply_to(message, "I only accept valid download links.")
+        await update.message.reply_text("❌ Please send a valid download link.")
 
-###############################################################################
-# Flask Routes for Webhook
+async def get_last_link(update: Update, context: CallbackContext) -> None:
+    user_id = str(update.message.chat_id)
+    fast_link = get_fast_link(user_id)
 
-@app.route('/')
-def index():
-    return "Bot is running!"
+    if fast_link:
+        await update.message.reply_text(f"✅ Your last stored fast link:\n{fast_link}")
+    else:
+        await update.message.reply_text("❌ No stored links found.")
 
-@app.route(f'/{TELEGRAM_TOKEN}', methods=['POST'])
-def webhook():
-    update = telebot.types.Update.de_json(request.get_data().decode('utf-8'))
-    bot.process_new_updates([update])
-    return "OK", 200
+# Set up the bot
+def main():
+    app = Application.builder().token(BOT_TOKEN).build()
 
-@app.route('/set_webhook', methods=['GET'])
-def set_webhook():
-    bot.remove_webhook()
-    success = bot.set_webhook(url=f"{BASE_URL}/{TELEGRAM_TOKEN}")
-    return jsonify({"status": "Webhook set" if success else "Webhook setup failed"})
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("lastlink", get_last_link))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-###############################################################################
-# Run the app on Azure
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 8000))
-    app.run(host='0.0.0.0', port=port, debug=False)
+    logger.info("🚀 Bot is running...")
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()
