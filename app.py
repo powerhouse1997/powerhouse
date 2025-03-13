@@ -12,6 +12,8 @@ import google.auth.transport.requests
 import google.oauth2.credentials
 from flask import Flask, request, jsonify
 import telebot
+import pyodbc
+import azure.identity
 from telebot.types import Message
 from urllib.parse import quote as url_quote
 
@@ -40,6 +42,19 @@ redis_client = redis.StrictRedis(
 ###############################################################################
 # Initialize Telegram Bot
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
+
+# Get Azure AD Token
+credential = azure.identity.DefaultAzureCredential()
+token = credential.get_token("https://database.windows.net/").token
+
+# Connection string (No password needed)
+conn_str = "DRIVER={ODBC Driver 18 for SQL Server};SERVER=tcp:powerhousesqll.database.windows.net,1433;DATABASE=powerhouse;Encrypt=yes;TrustServerCertificate=no;Connection Timeout=30;"
+conn = pyodbc.connect(conn_str, attrs_before={"AccessToken": token})
+
+# Test the connection
+cursor = conn.cursor()
+cursor.execute("SELECT TOP 1 * FROM sys.tables")  # Sample query
+print(cursor.fetchall())
 
 ###############################################################################
 # Google Drive Credentials & Authentication Setup
